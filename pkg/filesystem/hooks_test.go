@@ -113,9 +113,12 @@ func TestGenericAfterUpload(t *testing.T) {
 	mock.ExpectQuery("SELECT(.+)").
 		WithArgs(1).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "owner_id"}).AddRow(1, 1))
+	mock.ExpectQuery("SELECT(.+)files").
+		WithArgs(1, "我的文件").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "owner_id"}))
 	// 1
 	mock.ExpectQuery("SELECT(.+)").
-		WithArgs(1, 1, "我的文件").
+		WithArgs("我的文件", 1, 1).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "owner_id"}).AddRow(2, 1))
 	mock.ExpectQuery("SELECT(.+)files(.+)").WillReturnError(errors.New("not found"))
 	mock.ExpectBegin()
@@ -127,21 +130,16 @@ func TestGenericAfterUpload(t *testing.T) {
 	asserts.NoError(err)
 	asserts.NoError(mock.ExpectationsWereMet())
 
-	// 路径不存在
-	mock.ExpectQuery("SELECT(.+)folders(.+)").WillReturnRows(
-		mock.NewRows([]string{"name"}),
-	)
-	err = GenericAfterUpload(ctx, &fs, file)
-	asserts.Equal(ErrRootProtected, err)
-	asserts.NoError(mock.ExpectationsWereMet())
-
 	// 文件已存在
 	mock.ExpectQuery("SELECT(.+)").
 		WithArgs(1).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "owner_id"}).AddRow(1, 1))
+	mock.ExpectQuery("SELECT(.+)files").
+		WithArgs(1, "我的文件").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "owner_id"}))
 	// 1
 	mock.ExpectQuery("SELECT(.+)").
-		WithArgs(1, 1, "我的文件").
+		WithArgs("我的文件", 1, 1).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "owner_id"}).AddRow(2, 1))
 	mock.ExpectQuery("SELECT(.+)files(.+)").WillReturnRows(
 		mock.NewRows([]string{"name"}).AddRow("test.txt"),
@@ -154,9 +152,12 @@ func TestGenericAfterUpload(t *testing.T) {
 	mock.ExpectQuery("SELECT(.+)").
 		WithArgs(1).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "owner_id"}).AddRow(1, 1))
+	mock.ExpectQuery("SELECT(.+)files").
+		WithArgs(1, "我的文件").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "owner_id"}))
 	// 1
 	mock.ExpectQuery("SELECT(.+)").
-		WithArgs(1, 1, "我的文件").
+		WithArgs("我的文件", 1, 1).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "owner_id"}).AddRow(2, 1))
 	mock.ExpectQuery("SELECT(.+)files(.+)").WillReturnRows(
 		mock.NewRows([]string{"name", "upload_session_id"}).AddRow("test.txt", "1"),
@@ -169,9 +170,12 @@ func TestGenericAfterUpload(t *testing.T) {
 	mock.ExpectQuery("SELECT(.+)").
 		WithArgs(1).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "owner_id"}).AddRow(1, 1))
+	mock.ExpectQuery("SELECT(.+)files").
+		WithArgs(1, "我的文件").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "owner_id"}))
 	// 1
 	mock.ExpectQuery("SELECT(.+)").
-		WithArgs(1, 1, "我的文件").
+		WithArgs("我的文件", 1, 1).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "owner_id"}).AddRow(2, 1))
 
 	mock.ExpectQuery("SELECT(.+)files(.+)").WillReturnError(errors.New("not found"))
@@ -356,7 +360,7 @@ func TestHookClearFileSize(t *testing.T) {
 		)
 		mock.ExpectBegin()
 		mock.ExpectExec("UPDATE(.+)files(.+)").
-			WithArgs(0, sqlmock.AnyArg(), 1, 10).
+			WithArgs("", 0, sqlmock.AnyArg(), 1, 10).
 			WillReturnResult(sqlmock.NewResult(1, 1))
 		mock.ExpectExec("UPDATE(.+)users(.+)").
 			WithArgs(10, sqlmock.AnyArg()).
@@ -390,7 +394,7 @@ func TestHookUpdateSourceName(t *testing.T) {
 		}
 		ctx := context.WithValue(context.Background(), fsctx.FileModelCtx, originFile)
 		mock.ExpectBegin()
-		mock.ExpectExec("UPDATE(.+)").WithArgs("new.txt", sqlmock.AnyArg(), 1).WillReturnResult(sqlmock.NewResult(1, 1))
+		mock.ExpectExec("UPDATE(.+)").WithArgs("", "new.txt", sqlmock.AnyArg(), 1).WillReturnResult(sqlmock.NewResult(1, 1))
 		mock.ExpectCommit()
 		err := HookUpdateSourceName(ctx, fs, nil)
 		asserts.NoError(mock.ExpectationsWereMet())
@@ -425,7 +429,7 @@ func TestGenericAfterUpdate(t *testing.T) {
 		fs.Handler = handlerMock
 		mock.ExpectBegin()
 		mock.ExpectExec("UPDATE(.+)files(.+)").
-			WithArgs(10, sqlmock.AnyArg(), 1, 0).
+			WithArgs("", 10, sqlmock.AnyArg(), 1, 0).
 			WillReturnResult(sqlmock.NewResult(1, 1))
 		mock.ExpectExec("UPDATE(.+)users(.+)").
 			WithArgs(10, sqlmock.AnyArg()).
@@ -458,7 +462,7 @@ func TestGenericAfterUpdate(t *testing.T) {
 
 		mock.ExpectBegin()
 		mock.ExpectExec("UPDATE(.+)").
-			WithArgs(10, sqlmock.AnyArg(), 1, 0).
+			WithArgs("", 10, sqlmock.AnyArg(), 1, 0).
 			WillReturnError(errors.New("error"))
 		mock.ExpectRollback()
 
@@ -467,27 +471,6 @@ func TestGenericAfterUpdate(t *testing.T) {
 		asserts.NoError(mock.ExpectationsWereMet())
 		asserts.Error(err)
 	}
-}
-
-func TestHookGenerateThumb(t *testing.T) {
-	a := assert.New(t)
-	mockHandler := &FileHeaderMock{}
-	fs := &FileSystem{
-		User: &model.User{
-			Model: gorm.Model{ID: 1},
-		},
-		Handler: mockHandler,
-		Policy:  &model.Policy{Type: "local"},
-	}
-
-	mockHandler.On("Delete", testMock.Anything, []string{"1.txt._thumb"}).Return([]string{}, nil)
-	a.NoError(HookGenerateThumb(context.Background(), fs, &fsctx.FileStream{
-		Model: &model.File{
-			SourceName: "1.txt",
-		},
-	}))
-	fs.Recycle()
-	mockHandler.AssertExpectations(t)
 }
 
 func TestSlaveAfterUpload(t *testing.T) {
@@ -621,7 +604,7 @@ func TestHookChunkUploaded(t *testing.T) {
 	}
 
 	mock.ExpectBegin()
-	mock.ExpectExec("UPDATE(.+)files(.+)").WithArgs(20, sqlmock.AnyArg(), 1, 0).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec("UPDATE(.+)files(.+)").WithArgs("", 20, sqlmock.AnyArg(), 1, 0).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("UPDATE(.+)users(.+)").
 		WithArgs(20, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -642,7 +625,7 @@ func TestHookChunkUploadFailed(t *testing.T) {
 	}
 
 	mock.ExpectBegin()
-	mock.ExpectExec("UPDATE(.+)files(.+)").WithArgs(10, sqlmock.AnyArg(), 1, 0).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec("UPDATE(.+)files(.+)").WithArgs("", 10, sqlmock.AnyArg(), 1, 0).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("UPDATE(.+)users(.+)").
 		WithArgs(10, sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -667,6 +650,25 @@ func TestHookPopPlaceholderToFile(t *testing.T) {
 	a.NoError(mock.ExpectationsWereMet())
 }
 
+func TestHookPopPlaceholderToFileBySuffix(t *testing.T) {
+	a := assert.New(t)
+	fs := &FileSystem{
+		Policy: &model.Policy{Type: "cos"},
+	}
+	file := &fsctx.FileStream{
+		Name: "1.png",
+		Model: &model.File{
+			Model: gorm.Model{ID: 1},
+		},
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE(.+)files(.+)").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+	a.NoError(HookPopPlaceholderToFile("")(context.Background(), fs, file))
+	a.NoError(mock.ExpectationsWereMet())
+}
+
 func TestHookDeleteUploadSession(t *testing.T) {
 	a := assert.New(t)
 	fs := &FileSystem{}
@@ -680,4 +682,27 @@ func TestHookDeleteUploadSession(t *testing.T) {
 	a.NoError(HookDeleteUploadSession("TestHookDeleteUploadSession")(context.Background(), fs, file))
 	_, ok := cache.Get(UploadSessionCachePrefix + "TestHookDeleteUploadSession")
 	a.False(ok)
+}
+func TestNewWebdavAfterUploadHook(t *testing.T) {
+	a := assert.New(t)
+	fs := &FileSystem{}
+	file := &fsctx.FileStream{
+		Model: &model.File{
+			Model: gorm.Model{ID: 1},
+		},
+	}
+
+	req, _ := http.NewRequest("get", "http://localhost", nil)
+	req.Header.Add("X-Oc-Mtime", "1681521402")
+	req.Header.Add("OC-Checksum", "checksum")
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE(.+)files(.+)").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE(.+)files(.+)").WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+	err := NewWebdavAfterUploadHook(req)(context.Background(), fs, file)
+	a.NoError(err)
+	a.NoError(mock.ExpectationsWereMet())
+
 }

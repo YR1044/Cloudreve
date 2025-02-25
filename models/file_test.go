@@ -2,11 +2,12 @@ package model
 
 import (
 	"errors"
+	"testing"
+	"time"
+
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/jinzhu/gorm"
 	"github.com/stretchr/testify/assert"
-	"testing"
-	"time"
 )
 
 func TestFile_Create(t *testing.T) {
@@ -51,26 +52,54 @@ func TestFile_Create(t *testing.T) {
 
 func TestFile_AfterFind(t *testing.T) {
 	a := assert.New(t)
-	file := File{
-		Name:     "123",
-		Metadata: "{\"name\":\"123\"}",
+
+	// metadata not empty
+	{
+		file := File{
+			Name:     "123",
+			Metadata: "{\"name\":\"123\"}",
+		}
+
+		a.NoError(file.AfterFind())
+		a.Equal("123", file.MetadataSerialized["name"])
 	}
 
-	a.NoError(file.AfterFind())
-	a.Equal("123", file.MetadataSerialized["name"])
+	// metadata empty
+	{
+		file := File{
+			Name:     "123",
+			Metadata: "",
+		}
+		a.Nil(file.MetadataSerialized)
+		a.NoError(file.AfterFind())
+		a.NotNil(file.MetadataSerialized)
+	}
 }
 
 func TestFile_BeforeSave(t *testing.T) {
 	a := assert.New(t)
-	file := File{
-		Name: "123",
-		MetadataSerialized: map[string]string{
-			"name": "123",
-		},
+
+	// metadata not empty
+	{
+		file := File{
+			Name: "123",
+			MetadataSerialized: map[string]string{
+				"name": "123",
+			},
+		}
+
+		a.NoError(file.BeforeSave())
+		a.Equal("{\"name\":\"123\"}", file.Metadata)
 	}
 
-	a.NoError(file.BeforeSave())
-	a.Equal("{\"name\":\"123\"}", file.Metadata)
+	// metadata empty
+	{
+		file := File{
+			Name: "123",
+		}
+		a.NoError(file.BeforeSave())
+		a.Equal("", file.Metadata)
+	}
 }
 
 func TestFolder_GetChildFile(t *testing.T) {
@@ -256,6 +285,19 @@ func TestFile_GetPolicy(t *testing.T) {
 	}
 }
 
+func TestRemoveFilesWithSoftLinks_EmptyArg(t *testing.T) {
+	asserts := assert.New(t)
+	// 传入空
+	{
+		mock.ExpectQuery("SELECT(.+)files(.+)")
+		file, err := RemoveFilesWithSoftLinks([]File{})
+		asserts.Error(mock.ExpectationsWereMet())
+		asserts.NoError(err)
+		asserts.Equal(len(file), 0)
+		DB.Find(&File{})
+	}
+}
+
 func TestRemoveFilesWithSoftLinks(t *testing.T) {
 	asserts := assert.New(t)
 	files := []File{
@@ -271,30 +313,34 @@ func TestRemoveFilesWithSoftLinks(t *testing.T) {
 		},
 	}
 
+	// 传入空文件列表
+	{
+		file, err := RemoveFilesWithSoftLinks([]File{})
+		asserts.NoError(err)
+		asserts.Empty(file)
+	}
+
 	// 全都没有
 	{
 		mock.ExpectQuery("SELECT(.+)files(.+)").
-			WithArgs("1.txt", 23, 1, "2.txt", 24, 2).
+			WithArgs("1.txt", 23, 1).
+			WillReturnRows(sqlmock.NewRows([]string{"id", "policy_id", "source_name"}))
+		mock.ExpectQuery("SELECT(.+)files(.+)").
+			WithArgs("2.txt", 24, 2).
 			WillReturnRows(sqlmock.NewRows([]string{"id", "policy_id", "source_name"}))
 		file, err := RemoveFilesWithSoftLinks(files)
 		asserts.NoError(mock.ExpectationsWereMet())
 		asserts.NoError(err)
 		asserts.Equal(files, file)
 	}
-	// 查询出错
-	{
-		mock.ExpectQuery("SELECT(.+)files(.+)").
-			WithArgs("1.txt", 23, 1, "2.txt", 24, 2).
-			WillReturnError(errors.New("error"))
-		file, err := RemoveFilesWithSoftLinks(files)
-		asserts.NoError(mock.ExpectationsWereMet())
-		asserts.Error(err)
-		asserts.Nil(file)
-	}
+
 	// 第二个是软链
 	{
 		mock.ExpectQuery("SELECT(.+)files(.+)").
-			WithArgs("1.txt", 23, 1, "2.txt", 24, 2).
+			WithArgs("1.txt", 23, 1).
+			WillReturnRows(sqlmock.NewRows([]string{"id", "policy_id", "source_name"}))
+		mock.ExpectQuery("SELECT(.+)files(.+)").
+			WithArgs("2.txt", 24, 2).
 			WillReturnRows(
 				sqlmock.NewRows([]string{"id", "policy_id", "source_name"}).
 					AddRow(3, 24, "2.txt"),
@@ -304,14 +350,18 @@ func TestRemoveFilesWithSoftLinks(t *testing.T) {
 		asserts.NoError(err)
 		asserts.Equal(files[:1], file)
 	}
+
 	// 第一个是软链
 	{
 		mock.ExpectQuery("SELECT(.+)files(.+)").
-			WithArgs("1.txt", 23, 1, "2.txt", 24, 2).
+			WithArgs("1.txt", 23, 1).
 			WillReturnRows(
 				sqlmock.NewRows([]string{"id", "policy_id", "source_name"}).
 					AddRow(3, 23, "1.txt"),
 			)
+		mock.ExpectQuery("SELECT(.+)files(.+)").
+			WithArgs("2.txt", 24, 2).
+			WillReturnRows(sqlmock.NewRows([]string{"id", "policy_id", "source_name"}))
 		file, err := RemoveFilesWithSoftLinks(files)
 		asserts.NoError(mock.ExpectationsWereMet())
 		asserts.NoError(err)
@@ -320,11 +370,16 @@ func TestRemoveFilesWithSoftLinks(t *testing.T) {
 	// 全部是软链
 	{
 		mock.ExpectQuery("SELECT(.+)files(.+)").
-			WithArgs("1.txt", 23, 1, "2.txt", 24, 2).
+			WithArgs("1.txt", 23, 1).
 			WillReturnRows(
 				sqlmock.NewRows([]string{"id", "policy_id", "source_name"}).
-					AddRow(3, 24, "2.txt").
-					AddRow(4, 23, "1.txt"),
+					AddRow(3, 23, "1.txt"),
+			)
+		mock.ExpectQuery("SELECT(.+)files(.+)").
+			WithArgs("2.txt", 24, 2).
+			WillReturnRows(
+				sqlmock.NewRows([]string{"id", "policy_id", "source_name"}).
+					AddRow(3, 24, "2.txt"),
 			)
 		file, err := RemoveFilesWithSoftLinks(files)
 		asserts.NoError(mock.ExpectationsWereMet())
@@ -338,8 +393,8 @@ func TestDeleteFiles(t *testing.T) {
 
 	// uid 不一致
 	{
-		err := DeleteFiles([]*File{{}}, 1)
-		a.Contains("User id not consistent", err.Error())
+		err := DeleteFiles([]*File{{UserID: 2}}, 1)
+		a.Contains("user id not consistent", err.Error())
 	}
 
 	// 删除失败
@@ -348,7 +403,7 @@ func TestDeleteFiles(t *testing.T) {
 		mock.ExpectExec("DELETE(.+)").
 			WillReturnError(errors.New("error"))
 		mock.ExpectRollback()
-		err := DeleteFiles([]*File{{}}, 0)
+		err := DeleteFiles([]*File{{UserID: 1}}, 1)
 		a.NoError(mock.ExpectationsWereMet())
 		a.Error(err)
 	}
@@ -360,21 +415,46 @@ func TestDeleteFiles(t *testing.T) {
 			WillReturnResult(sqlmock.NewResult(1, 1))
 		mock.ExpectExec("UPDATE(.+)storage(.+)").WillReturnError(errors.New("error"))
 		mock.ExpectRollback()
-		err := DeleteFiles([]*File{{}}, 0)
+		err := DeleteFiles([]*File{{UserID: 1}}, 1)
 		a.NoError(mock.ExpectationsWereMet())
 		a.Error(err)
 	}
 
-	// 成功，其中一个文件已经不存在
+	// 文件脏读
 	{
 		mock.ExpectBegin()
 		mock.ExpectExec("DELETE(.+)").
 			WillReturnResult(sqlmock.NewResult(1, 0))
+		mock.ExpectRollback()
+		err := DeleteFiles([]*File{{Size: 1, UserID: 1}, {Size: 2, UserID: 1}}, 1)
+		a.NoError(mock.ExpectationsWereMet())
+		a.Error(err)
+		a.Contains("file size is dirty", err.Error())
+	}
+
+	// 成功
+	{
+		mock.ExpectBegin()
 		mock.ExpectExec("DELETE(.+)").
 			WillReturnResult(sqlmock.NewResult(2, 1))
-		mock.ExpectExec("UPDATE(.+)storage(.+)").WithArgs(uint64(2), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(1, 1))
+		mock.ExpectExec("DELETE(.+)").
+			WillReturnResult(sqlmock.NewResult(2, 1))
+		mock.ExpectExec("UPDATE(.+)storage(.+)").WithArgs(uint64(3), sqlmock.AnyArg(), uint(1)).WillReturnResult(sqlmock.NewResult(1, 1))
 		mock.ExpectCommit()
-		err := DeleteFiles([]*File{{Size: 1}, {Size: 2}}, 0)
+		err := DeleteFiles([]*File{{Size: 1, UserID: 1}, {Size: 2, UserID: 1}}, 1)
+		a.NoError(mock.ExpectationsWereMet())
+		a.NoError(err)
+	}
+
+	// 成功,  关联用户不存在
+	{
+		mock.ExpectBegin()
+		mock.ExpectExec("DELETE(.+)").
+			WillReturnResult(sqlmock.NewResult(2, 1))
+		mock.ExpectExec("DELETE(.+)").
+			WillReturnResult(sqlmock.NewResult(2, 1))
+		mock.ExpectCommit()
+		err := DeleteFiles([]*File{{Size: 1, UserID: 1}, {Size: 2, UserID: 1}}, 0)
 		a.NoError(mock.ExpectationsWereMet())
 		a.NoError(err)
 	}
@@ -413,14 +493,48 @@ func TestGetFilesByUploadSession(t *testing.T) {
 func TestFile_Updates(t *testing.T) {
 	asserts := assert.New(t)
 	file := File{Model: gorm.Model{ID: 1}}
+
 	// rename
 	{
-		mock.ExpectBegin()
-		mock.ExpectExec("UPDATE(.+)").WithArgs("newName", sqlmock.AnyArg(), 1).WillReturnResult(sqlmock.NewResult(1, 1))
-		mock.ExpectCommit()
-		err := file.Rename("newName")
-		asserts.NoError(mock.ExpectationsWereMet())
-		asserts.NoError(err)
+		// not reset thumb
+		{
+			file := File{Model: gorm.Model{ID: 1}}
+			mock.ExpectBegin()
+			mock.ExpectExec("UPDATE(.+)files(.+)SET(.+)").WithArgs("", "newName", sqlmock.AnyArg(), 1).WillReturnResult(sqlmock.NewResult(1, 1))
+			mock.ExpectCommit()
+			err := file.Rename("newName")
+			asserts.NoError(mock.ExpectationsWereMet())
+			asserts.NoError(err)
+		}
+
+		// thumb not available, rename base name only
+		{
+			file := File{Model: gorm.Model{ID: 1}, Name: "1.txt", MetadataSerialized: map[string]string{
+				ThumbStatusMetadataKey: ThumbStatusNotAvailable,
+			},
+				Metadata: "{}"}
+			mock.ExpectBegin()
+			mock.ExpectExec("UPDATE(.+)files(.+)SET(.+)").WithArgs("{}", "newName.txt", sqlmock.AnyArg(), 1).WillReturnResult(sqlmock.NewResult(1, 1))
+			mock.ExpectCommit()
+			err := file.Rename("newName.txt")
+			asserts.NoError(mock.ExpectationsWereMet())
+			asserts.NoError(err)
+			asserts.Equal(ThumbStatusNotAvailable, file.MetadataSerialized[ThumbStatusMetadataKey])
+		}
+
+		// thumb not available, rename base name only
+		{
+			file := File{Model: gorm.Model{ID: 1}, Name: "1.txt", MetadataSerialized: map[string]string{
+				ThumbStatusMetadataKey: ThumbStatusNotAvailable,
+			}}
+			mock.ExpectBegin()
+			mock.ExpectExec("UPDATE(.+)files(.+)SET(.+)").WithArgs("{}", "newName.jpg", sqlmock.AnyArg(), 1).WillReturnResult(sqlmock.NewResult(1, 1))
+			mock.ExpectCommit()
+			err := file.Rename("newName.jpg")
+			asserts.NoError(mock.ExpectationsWereMet())
+			asserts.NoError(err)
+			asserts.Empty(file.MetadataSerialized[ThumbStatusMetadataKey])
+		}
 	}
 
 	// UpdatePicInfo
@@ -436,7 +550,7 @@ func TestFile_Updates(t *testing.T) {
 	// UpdateSourceName
 	{
 		mock.ExpectBegin()
-		mock.ExpectExec("UPDATE(.+)").WithArgs("newName", sqlmock.AnyArg(), 1).WillReturnResult(sqlmock.NewResult(1, 1))
+		mock.ExpectExec("UPDATE(.+)").WithArgs("", "newName", sqlmock.AnyArg(), 1).WillReturnResult(sqlmock.NewResult(1, 1))
 		mock.ExpectCommit()
 		err := file.UpdateSourceName("newName")
 		asserts.NoError(mock.ExpectationsWereMet())
@@ -451,7 +565,7 @@ func TestFile_UpdateSize(t *testing.T) {
 	{
 		file := File{Size: 10}
 		mock.ExpectBegin()
-		mock.ExpectExec("UPDATE(.+)files(.+)").WithArgs(11, sqlmock.AnyArg(), 10).WillReturnResult(sqlmock.NewResult(1, 1))
+		mock.ExpectExec("UPDATE(.+)files(.+)").WithArgs("", 11, sqlmock.AnyArg(), 10).WillReturnResult(sqlmock.NewResult(1, 1))
 		mock.ExpectExec("UPDATE(.+)storage(.+)+(.+)").WithArgs(uint64(1), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(1, 1))
 		mock.ExpectCommit()
 
@@ -463,7 +577,7 @@ func TestFile_UpdateSize(t *testing.T) {
 	{
 		file := File{Size: 10}
 		mock.ExpectBegin()
-		mock.ExpectExec("UPDATE(.+)files(.+)").WithArgs(8, sqlmock.AnyArg(), 10).WillReturnResult(sqlmock.NewResult(1, 1))
+		mock.ExpectExec("UPDATE(.+)files(.+)").WithArgs("", 8, sqlmock.AnyArg(), 10).WillReturnResult(sqlmock.NewResult(1, 1))
 		mock.ExpectExec("UPDATE(.+)storage(.+)-(.+)").WithArgs(uint64(2), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(1, 1))
 		mock.ExpectCommit()
 
@@ -475,7 +589,7 @@ func TestFile_UpdateSize(t *testing.T) {
 	{
 		file := File{Size: 10}
 		mock.ExpectBegin()
-		mock.ExpectExec("UPDATE(.+)files(.+)").WithArgs(8, sqlmock.AnyArg(), 10).WillReturnError(errors.New("error"))
+		mock.ExpectExec("UPDATE(.+)files(.+)").WithArgs("", 8, sqlmock.AnyArg(), 10).WillReturnError(errors.New("error"))
 		mock.ExpectRollback()
 
 		a.Error(file.UpdateSize(8))
@@ -486,7 +600,7 @@ func TestFile_UpdateSize(t *testing.T) {
 	{
 		file := File{Size: 10}
 		mock.ExpectBegin()
-		mock.ExpectExec("UPDATE(.+)files(.+)").WithArgs(8, sqlmock.AnyArg(), 10).WillReturnResult(sqlmock.NewResult(1, 1))
+		mock.ExpectExec("UPDATE(.+)files(.+)").WithArgs("", 8, sqlmock.AnyArg(), 10).WillReturnResult(sqlmock.NewResult(1, 1))
 		mock.ExpectExec("UPDATE(.+)storage(.+)-(.+)").WithArgs(uint64(2), sqlmock.AnyArg()).WillReturnError(errors.New("error"))
 		mock.ExpectRollback()
 
@@ -547,7 +661,7 @@ func TestGetFilesByKeywords(t *testing.T) {
 	// 未指定用户
 	{
 		mock.ExpectQuery("SELECT(.+)").WithArgs("k1", "k2").WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
-		res, err := GetFilesByKeywords(0, "k1", "k2")
+		res, err := GetFilesByKeywords(0, nil, "k1", "k2")
 		asserts.NoError(mock.ExpectationsWereMet())
 		asserts.NoError(err)
 		asserts.Len(res, 1)
@@ -556,9 +670,116 @@ func TestGetFilesByKeywords(t *testing.T) {
 	// 指定用户
 	{
 		mock.ExpectQuery("SELECT(.+)").WithArgs(1, "k1", "k2").WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
-		res, err := GetFilesByKeywords(1, "k1", "k2")
+		res, err := GetFilesByKeywords(1, nil, "k1", "k2")
 		asserts.NoError(mock.ExpectationsWereMet())
 		asserts.NoError(err)
 		asserts.Len(res, 1)
 	}
+
+	// 指定父目录
+	{
+		mock.ExpectQuery("SELECT(.+)").WithArgs(1, 12, "k1", "k2").WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
+		res, err := GetFilesByKeywords(1, []uint{12}, "k1", "k2")
+		asserts.NoError(mock.ExpectationsWereMet())
+		asserts.NoError(err)
+		asserts.Len(res, 1)
+	}
+}
+
+func TestFile_CreateOrGetSourceLink(t *testing.T) {
+	a := assert.New(t)
+	file := &File{}
+	file.ID = 1
+
+	// 已存在，返回老的 SourceLink
+	{
+		mock.ExpectQuery("SELECT(.+)source_links(.+)").WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(2))
+		res, err := file.CreateOrGetSourceLink()
+		a.NoError(err)
+		a.EqualValues(2, res.ID)
+		a.NoError(mock.ExpectationsWereMet())
+	}
+
+	// 不存在，插入失败
+	{
+		expectedErr := errors.New("error")
+		mock.ExpectQuery("SELECT(.+)source_links(.+)").WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"id"}))
+		mock.ExpectBegin()
+		mock.ExpectExec("INSERT(.+)source_links(.+)").WillReturnError(expectedErr)
+		mock.ExpectRollback()
+		res, err := file.CreateOrGetSourceLink()
+		a.Nil(res)
+		a.ErrorIs(err, expectedErr)
+		a.NoError(mock.ExpectationsWereMet())
+	}
+
+	// 成功
+	{
+		mock.ExpectQuery("SELECT(.+)source_links(.+)").WithArgs(1).WillReturnRows(sqlmock.NewRows([]string{"id"}))
+		mock.ExpectBegin()
+		mock.ExpectExec("INSERT(.+)source_links(.+)").WillReturnResult(sqlmock.NewResult(2, 1))
+		mock.ExpectCommit()
+		res, err := file.CreateOrGetSourceLink()
+		a.NoError(err)
+		a.EqualValues(2, res.ID)
+		a.EqualValues(file.ID, res.File.ID)
+		a.NoError(mock.ExpectationsWereMet())
+	}
+}
+
+func TestFile_UpdateMetadata(t *testing.T) {
+	a := assert.New(t)
+	file := &File{}
+	file.ID = 1
+
+	// 更新失败
+	{
+		expectedErr := errors.New("error")
+		mock.ExpectBegin()
+		mock.ExpectExec("UPDATE(.+)files(.+)").WithArgs(sqlmock.AnyArg(), 1).WillReturnError(expectedErr)
+		mock.ExpectRollback()
+		a.ErrorIs(file.UpdateMetadata(map[string]string{"1": "1"}), expectedErr)
+		a.NoError(mock.ExpectationsWereMet())
+	}
+
+	// 成功
+	{
+		mock.ExpectBegin()
+		mock.ExpectExec("UPDATE(.+)files(.+)").WithArgs(sqlmock.AnyArg(), 1).WillReturnResult(sqlmock.NewResult(1, 1))
+		mock.ExpectCommit()
+		a.NoError(file.UpdateMetadata(map[string]string{"1": "1"}))
+		a.NoError(mock.ExpectationsWereMet())
+		a.Equal("1", file.MetadataSerialized["1"])
+	}
+}
+
+func TestFile_ShouldLoadThumb(t *testing.T) {
+	a := assert.New(t)
+	file := &File{
+		MetadataSerialized: map[string]string{},
+	}
+	file.ID = 1
+
+	// 无缩略图
+	{
+		file.MetadataSerialized[ThumbStatusMetadataKey] = ThumbStatusNotAvailable
+		a.False(file.ShouldLoadThumb())
+	}
+
+	// 有缩略图
+	{
+		file.MetadataSerialized[ThumbStatusMetadataKey] = ThumbStatusExist
+		a.True(file.ShouldLoadThumb())
+	}
+}
+
+func TestFile_ThumbFile(t *testing.T) {
+	a := assert.New(t)
+	file := &File{
+		SourceName:         "test",
+		MetadataSerialized: map[string]string{},
+	}
+	file.ID = 1
+
+	a.Equal("test._thumb", file.ThumbFile())
 }
